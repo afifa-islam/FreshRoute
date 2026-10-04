@@ -174,6 +174,8 @@ class MatchResult:
     route_legs: List[dict] = field(default_factory=list)
 
     rejection_reasons: List[str] = field(default_factory=list)
+    # Same reasons as machine-readable codes, so the UI can translate them.
+    rejection_details: List[dict] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
 
 
@@ -311,36 +313,47 @@ def calculate_match(
       return_route    buyer           -> truck's own destination
     """
     reasons: List[str] = []
+    details: List[dict] = []
     warnings: List[str] = []
+
+    def reject(code: str, text: str, **params) -> None:
+        reasons.append(text)
+        details.append({"code": code, **params})
 
     vehicle = driver.vehicle_type.strip().lower()
     allowed = [v.lower() for v in analysis.safe_vehicle_types]
 
     # ----- vehicle ------------------------------------------------
     if vehicle not in VEHICLE_TYPES:
-        reasons.append(f"Unknown vehicle type '{vehicle}'.")
+        reject("vehicle_unknown", f"Unknown vehicle type '{vehicle}'.", vehicle=vehicle)
     elif vehicle not in allowed:
-        reasons.append(
-            f"Vehicle type '{vehicle}' is not recommended for {shipment.crop}."
+        reject(
+            "vehicle_not_suitable",
+            f"Vehicle type '{vehicle}' is not recommended for {shipment.crop}.",
+            vehicle=vehicle,
+            crop=shipment.crop,
         )
 
     # ----- capacity -----------------------------------------------
     if driver.capacity_kg <= 0:
-        reasons.append("Truck capacity must be greater than zero.")
+        reject("capacity_zero", "Truck capacity must be greater than zero.")
     elif driver.capacity_kg < shipment.quantity_kg:
-        reasons.append(
+        reject(
+            "capacity_low",
             f"Truck capacity ({driver.capacity_kg:.0f} kg) is below "
-            f"shipment quantity ({shipment.quantity_kg:.0f} kg)."
+            f"shipment quantity ({shipment.quantity_kg:.0f} kg).",
+            cap=f"{driver.capacity_kg:.0f}",
+            qty=f"{shipment.quantity_kg:.0f}",
         )
 
     # ----- availability -------------------------------------------
     if driver.available_in_hours < 0:
-        reasons.append("Driver availability time is invalid.")
+        reject("availability_invalid", "Driver availability time is invalid.")
 
     # ----- routing data -------------------------------------------
     routes = (direct_route, pickup_route, delivery_route, return_route)
     if not all(r.success for r in routes):
-        reasons.append("Routing data is unavailable for this truck.")
+        reject("routing_unavailable", "Routing data is unavailable for this truck.")
 
     used_fallback = any(r.estimated for r in routes)
     if used_fallback:
@@ -359,9 +372,12 @@ def calculate_match(
     detour = max(0.0, new_trip - direct_route.distance_km)
 
     if detour > MAX_DETOUR_KM:
-        reasons.append(
+        reject(
+            "detour",
             f"Detour is {detour:.1f} km, which exceeds the "
-            f"{MAX_DETOUR_KM:.0f} km limit."
+            f"{MAX_DETOUR_KM:.0f} km limit.",
+            detour=f"{detour:.1f}",
+            limit=f"{MAX_DETOUR_KM:.0f}",
         )
 
     # ----- shelf life ---------------------------------------------
@@ -380,15 +396,20 @@ def calculate_match(
     remaining_at_delivery = analysis.remaining_shelf_life_hours - consumed
 
     if analysis.remaining_shelf_life_hours < MIN_REMAINING_SHELF_LIFE_HOURS:
-        reasons.append(
+        reject(
+            "shelf_below_min",
             "Remaining shelf life is below the minimum safety buffer "
-            f"({MIN_REMAINING_SHELF_LIFE_HOURS:.0f} h)."
+            f"({MIN_REMAINING_SHELF_LIFE_HOURS:.0f} h).",
+            min=f"{MIN_REMAINING_SHELF_LIFE_HOURS:.0f}",
         )
     elif remaining_at_delivery < MIN_REMAINING_SHELF_LIFE_HOURS:
-        reasons.append(
+        reject(
+            "shelf_after_delivery",
             "Delivery would leave only "
             f"{max(0.0, remaining_at_delivery):.1f} h of shelf life "
-            f"(minimum {MIN_REMAINING_SHELF_LIFE_HOURS:.0f} h)."
+            f"(minimum {MIN_REMAINING_SHELF_LIFE_HOURS:.0f} h).",
+            left=f"{max(0.0, remaining_at_delivery):.1f}",
+            min=f"{MIN_REMAINING_SHELF_LIFE_HOURS:.0f}",
         )
 
     # ----- scores (0..1, higher is better) -------------------------
@@ -460,6 +481,7 @@ def calculate_match(
         used_fallback=used_fallback,
         route_legs=route_legs,
         rejection_reasons=reasons,
+        rejection_details=details,
         warnings=warnings,
     )
 
@@ -499,6 +521,7 @@ def rank_matches(
                 valid=False,
                 reason=f"Rejected: {message}",
                 rejection_reasons=[message],
+                rejection_details=[{"code": "eval_error", "message": str(exc)}],
             )
 
         results.append(result)
