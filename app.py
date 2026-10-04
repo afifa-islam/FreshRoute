@@ -20,6 +20,7 @@ from core import (
     analyze_shipment,
     rank_matches,
 )
+from i18n import tr
 from services import (
     ask_freshroute_ai,
     extract_shipment_from_text,
@@ -44,8 +45,43 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-st.markdown(
-    """
+# Internal language names (also used for Groq prompts and voice).
+LANGUAGE_CODES = {"English": "en", "Urdu": "ur", "Roman Urdu": None}
+# What the user sees in the language picker.
+LANGUAGE_LABELS = {"English": "English", "Urdu": "اردو", "Roman Urdu": "Roman Urdu"}
+
+# The language picker is a widget with key="language"; Streamlit writes its
+# value into session_state before the script reruns, so it is already
+# available here, at the very top of the run.
+st.session_state.setdefault("language", "English")
+
+
+def is_urdu() -> bool:
+    return st.session_state.get("language") == "Urdu"
+
+
+def t(key: str, **params) -> str:
+    """Translate a UI string. Urdu UI only when Urdu is selected."""
+    return tr("ur" if is_urdu() else "en", key, **params)
+
+
+def join_items(items: List[str]) -> str:
+    return t("sep").join(items)
+
+
+def crop_label(crop: str) -> str:
+    key = f"crop_{crop}"
+    label = t(key)
+    return crop.title() if label == key else label
+
+
+def vehicle_label(vehicle: str) -> str:
+    key = f"vehicle_{vehicle}"
+    label = t(key)
+    return vehicle if label == key else label
+
+
+BASE_CSS = """
 <style>
 .block-container {padding-top: 1.4rem; max-width: 1180px;}
 #MainMenu, footer {visibility: hidden;}
@@ -76,9 +112,43 @@ st.markdown(
 }
 button[data-baseweb="tab"] {font-size: 1rem; font-weight: 600;}
 </style>
-""",
-    unsafe_allow_html=True,
-)
+"""
+
+# Applied only when Urdu is selected: right-to-left layout and an Urdu font.
+# The font is set on text elements only (not on "*") so Streamlit's icon
+# fonts keep working.
+URDU_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Naskh+Arabic:wght@400;600;700&display=swap');
+
+.stApp {direction: rtl;}
+.block-container {text-align: right;}
+
+.stApp :is(p, h1, h2, h3, h4, h5, h6, label, li, button, input, textarea,
+           [data-testid="stMarkdownContainer"],
+           [data-testid="stMetricLabel"], [data-testid="stMetricValue"],
+           [data-testid="stCaptionContainer"], [data-baseweb="tab"],
+           [data-baseweb="select"], [data-testid="stChatMessageContent"]) {
+    font-family: 'Noto Naskh Arabic', 'Jameel Noori Nastaleeq', 'Segoe UI',
+                 Tahoma, sans-serif;
+}
+.stApp :is(p, li, label, [data-testid="stMarkdownContainer"],
+           [data-testid="stCaptionContainer"]) {line-height: 1.9;}
+
+/* Columns, tabs and text follow the right-to-left direction */
+[data-testid="stHorizontalBlock"], [data-baseweb="tab-list"] {direction: rtl;}
+h1, h2, h3, h4, h5, h6, p, label, li, .stCaption {text-align: right;}
+
+/* Things that must stay left-to-right so they behave normally */
+[data-testid="stSlider"], [data-testid="stDataFrame"],
+[data-testid="stDeckGlJsonChart"], input[type="number"] {direction: ltr;}
+[data-testid="stSlider"] label, [data-testid="stSlider"] p {direction: rtl;}
+</style>
+"""
+
+st.markdown(BASE_CSS, unsafe_allow_html=True)
+if is_urdu():
+    st.markdown(URDU_CSS, unsafe_allow_html=True)
 
 
 # =========================================================
@@ -86,14 +156,6 @@ button[data-baseweb="tab"] {font-size: 1rem; font-weight: 600;}
 # =========================================================
 
 CROPS = list(CROP_PROFILES.keys())
-
-LANGUAGE_CODES = {"English": "en", "Urdu": "ur", "Roman Urdu": None}
-
-VEHICLE_LABELS = {
-    "refrigerated": "Refrigerated truck",
-    "covered": "Covered truck",
-    "open": "Open truck",
-}
 
 DEFAULT_RELIABILITY = 0.80
 
@@ -167,12 +229,6 @@ DRIVER_FORM_DEFAULTS: Dict[str, Any] = {
 }
 
 URGENCY_ICONS = {"GREEN": "🟢", "YELLOW": "🟡", "ORANGE": "🟠", "RED": "🔴"}
-URGENCY_TEXT = {
-    "GREEN": "Plenty of time",
-    "YELLOW": "Move within a day",
-    "ORANGE": "Move soon",
-    "RED": "Critical, move immediately",
-}
 
 
 class AnalysisError(Exception):
@@ -235,30 +291,30 @@ def clean_fleet(df: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
     df = df[~blank].reset_index(drop=True)
 
     for i, row in df.iterrows():
-        label = row["driver_id"] or f"Row {i + 1}"
+        where = row["driver_id"] or t("row", n=i + 1)
 
         if not row["driver_id"]:
-            errors.append(f"Row {i + 1}: Truck ID is required.")
+            errors.append(t("err_id_required", where=where))
         if row["vehicle_type"] not in VEHICLE_TYPES:
-            errors.append(f"{label}: choose refrigerated, covered or open.")
+            errors.append(t("err_vehicle", where=where))
         if pd.isna(row["capacity_kg"]) or row["capacity_kg"] <= 0:
-            errors.append(f"{label}: capacity must be greater than 0.")
+            errors.append(t("err_capacity", where=where))
         if pd.isna(row["available_in_hours"]) or row["available_in_hours"] < 0:
-            errors.append(f"{label}: 'Free in (hours)' must be 0 or more.")
+            errors.append(t("err_free", where=where))
         if pd.isna(row["reliability"]) or not 0 <= row["reliability"] <= 1:
-            errors.append(f"{label}: rating must be between 0 and 1.")
+            errors.append(t("err_rating", where=where))
         if not row["current_location"]:
-            errors.append(f"{label}: current location is required.")
+            errors.append(t("err_location", where=where))
         if not row["destination"]:
-            errors.append(f"{label}: returning destination is required.")
+            errors.append(t("err_destination", where=where))
         if row["phone"]:
             digits = sum(ch.isdigit() for ch in row["phone"])
             if not 7 <= digits <= 15:
-                errors.append(f"{label}: the phone number does not look valid.")
+                errors.append(t("err_phone", where=where))
 
     ids = df.loc[df["driver_id"] != "", "driver_id"]
     for duplicate in ids[ids.duplicated()].unique():
-        errors.append(f"Truck ID '{duplicate}' is used more than once.")
+        errors.append(t("err_duplicate", id=duplicate))
 
     return df, errors
 
@@ -293,7 +349,7 @@ def build_drivers(df: pd.DataFrame) -> Tuple[List[Driver], List[str]]:
                 )
             )
         except Exception as exc:
-            warnings.append(f"{row['driver_id']} was skipped: {exc}")
+            warnings.append(t("truck_skipped", id=row["driver_id"], err=exc))
 
     return drivers, warnings
 
@@ -331,6 +387,8 @@ init_state()
 # =========================================================
 # VOICE
 # =========================================================
+# Voice messages are stored as (kind, key, params) and translated when
+# they are shown, so they switch language together with the interface.
 
 def _to_float(value: Any) -> float | None:
     try:
@@ -345,19 +403,21 @@ def transcribe_callback(audio_key: str, text_key: str, msg_key: str) -> None:
     audio = st.session_state.get(audio_key)
 
     if audio is None:
-        st.session_state[msg_key] = ("warning", "Please record a message first.")
+        st.session_state[msg_key] = ("warning", "voice_record_first", {})
         return
 
     language = LANGUAGE_CODES.get(st.session_state.get("language", "English"))
 
     try:
         st.session_state[text_key] = transcribe_audio(audio.getvalue(), language)
-        st.session_state[msg_key] = (
-            "success",
-            "Done. Check the text, then press the fill button.",
-        )
+        st.session_state[msg_key] = ("success", "voice_done", {})
     except Exception as exc:
-        st.session_state[msg_key] = ("error", f"We could not process the recording: {exc}")
+        st.session_state[msg_key] = ("error", "voice_fail", {"err": str(exc)})
+
+
+def _filled_message(applied: List[str], next_key: str) -> Tuple[str, str, dict]:
+    fields = join_items([t(f) for f in applied])
+    return ("success", "voice_filled", {"fields": fields, "next": t(next_key)})
 
 
 def fill_shipment_callback() -> None:
@@ -365,13 +425,13 @@ def fill_shipment_callback() -> None:
     text = st.session_state.get("transcript_text", "").strip()
 
     if not text:
-        st.session_state.voice_msg = ("warning", "There is no text to read yet.")
+        st.session_state.voice_msg = ("warning", "voice_no_text", {})
         return
 
     try:
         data = extract_shipment_from_text(text, CROPS)
     except Exception as exc:
-        st.session_state.voice_msg = ("error", f"We could not read the text: {exc}")
+        st.session_state.voice_msg = ("error", "voice_read_fail", {"err": str(exc)})
         return
 
     applied: List[str] = []
@@ -379,38 +439,32 @@ def fill_shipment_callback() -> None:
     crop = str(data.get("crop") or "").strip().lower()
     if crop in CROP_PROFILES:
         st.session_state.crop = crop
-        applied.append("crop")
+        applied.append("f_crop")
 
     quantity = _to_float(data.get("quantity_kg"))
     if quantity is not None and quantity >= 1:
         st.session_state.quantity = quantity
-        applied.append("quantity")
+        applied.append("f_quantity")
 
     age = _to_float(data.get("harvest_age_hours"))
     if age is not None and age >= 0:
         st.session_state.harvest_age = age
-        applied.append("time since harvest")
+        applied.append("f_age")
 
     pickup = str(data.get("pickup_location") or "").strip()
     if pickup:
         st.session_state.origin_name = pickup
-        applied.append("pickup location")
+        applied.append("f_pickup")
 
     destination = str(data.get("destination") or "").strip()
     if destination:
         st.session_state.destination_name = destination
-        applied.append("destination")
+        applied.append("f_destination")
 
     if applied:
-        st.session_state.voice_msg = (
-            "success",
-            "Filled in: " + ", ".join(applied) + ". Please review before continuing.",
-        )
+        st.session_state.voice_msg = _filled_message(applied, "voice_next_continue")
     else:
-        st.session_state.voice_msg = (
-            "warning",
-            "We could not find shipment details in that message.",
-        )
+        st.session_state.voice_msg = ("warning", "voice_none_shipment", {})
 
 
 def fill_vehicle_callback() -> None:
@@ -418,13 +472,17 @@ def fill_vehicle_callback() -> None:
     text = st.session_state.get("driver_transcript_text", "").strip()
 
     if not text:
-        st.session_state.driver_voice_msg = ("warning", "There is no text to read yet.")
+        st.session_state.driver_voice_msg = ("warning", "voice_no_text", {})
         return
 
     try:
         data = extract_vehicle_from_text(text, list(VEHICLE_TYPES))
     except Exception as exc:
-        st.session_state.driver_voice_msg = ("error", f"We could not read the text: {exc}")
+        st.session_state.driver_voice_msg = (
+            "error",
+            "voice_read_fail",
+            {"err": str(exc)},
+        )
         return
 
     applied: List[str] = []
@@ -432,48 +490,50 @@ def fill_vehicle_callback() -> None:
     name = str(data.get("driver_name") or "").strip()
     if name:
         st.session_state.drv_name = name
-        applied.append("name")
+        applied.append("f_name")
 
     phone = re.sub(r"[^\d+]", "", str(data.get("phone") or ""))
     if phone:
         st.session_state.drv_phone = phone
-        applied.append("phone")
+        applied.append("f_phone")
 
     vehicle = str(data.get("vehicle_type") or "").strip().lower()
     if vehicle in VEHICLE_TYPES:
         st.session_state.drv_vehicle = vehicle
-        applied.append("vehicle type")
+        applied.append("f_vehicle")
 
     capacity = _to_float(data.get("capacity_kg"))
     if capacity is not None and capacity >= 1:
         st.session_state.drv_capacity = capacity
-        applied.append("capacity")
+        applied.append("f_capacity")
 
     available = _to_float(data.get("available_in_hours"))
     if available is not None and available >= 0:
         st.session_state.drv_available = available
-        applied.append("availability")
+        applied.append("f_availability")
 
     location = str(data.get("current_location") or "").strip()
     if location:
         st.session_state.drv_location = location
-        applied.append("current location")
+        applied.append("f_location")
 
     destination = str(data.get("destination") or "").strip()
     if destination:
         st.session_state.drv_destination = destination
-        applied.append("destination")
+        applied.append("f_destination")
 
     if applied:
-        st.session_state.driver_voice_msg = (
-            "success",
-            "Filled in: " + ", ".join(applied) + ". Please review before registering.",
+        st.session_state.driver_voice_msg = _filled_message(
+            applied, "voice_next_register"
         )
     else:
-        st.session_state.driver_voice_msg = (
-            "warning",
-            "We could not find vehicle details in that message.",
-        )
+        st.session_state.driver_voice_msg = ("warning", "voice_none_vehicle", {})
+
+
+def show_message(message) -> None:
+    """Display a stored (kind, key, params) message in the current language."""
+    kind, key, params = message
+    getattr(st, kind)(t(key, **params))
 
 
 def voice_box(
@@ -489,31 +549,30 @@ def voice_box(
         st.caption(hint)
 
         if not groq_configured():
-            st.info("Voice input is not available right now. Please use the form below.")
+            st.info(t("voice_unavailable"))
             return
 
-        st.audio_input("Record your message", sample_rate=16000, key=audio_key)
+        st.audio_input(t("voice_record"), sample_rate=16000, key=audio_key)
 
         st.button(
-            "Convert recording to text",
+            t("voice_transcribe"),
             key=f"{audio_key}_transcribe",
             on_click=transcribe_callback,
             args=(audio_key, text_key, msg_key),
             width="stretch",
         )
 
-        st.text_area("What we heard (you can edit it)", key=text_key, height=100)
+        st.text_area(t("voice_heard"), key=text_key, height=100)
 
         st.button(
-            "Fill the form from this text",
+            t("voice_fill"),
             key=f"{audio_key}_fill",
             on_click=fill_callback,
             width="stretch",
         )
 
         if st.session_state[msg_key]:
-            kind, message = st.session_state[msg_key]
-            getattr(st, kind)(message)
+            show_message(st.session_state[msg_key])
 
 
 # =========================================================
@@ -542,27 +601,29 @@ def register_driver_callback() -> None:
     cleaned, errors = clean_fleet(combined)
 
     if errors:
-        state.driver_msg = ("error", "Please fix: " + " ".join(errors))
+        state.driver_msg = (
+            "error",
+            "fix_prefix",
+            {"errors": " ".join(errors)},
+        )
         return
 
-    for label, key in (
-        ("current location", "drv_location"),
-        ("returning destination", "drv_destination"),
+    for label_key, key in (
+        ("label_current_location", "drv_location"),
+        ("label_return_destination", "drv_destination"),
     ):
         try:
             geocode_location(state[key])
         except Exception as exc:
             state.driver_msg = (
                 "error",
-                f"We could not find your {label} ('{state[key]}'). {exc}",
+                "geo_fail",
+                {"label": t(label_key), "value": state[key], "err": str(exc)},
             )
             return
 
     set_fleet(cleaned)
-    state.driver_msg = (
-        "success",
-        f"{new_row['driver_id']} is registered. Farmers can now be matched with it.",
-    )
+    state.driver_msg = ("success", "truck_registered", {"id": new_row["driver_id"]})
 
     for key, value in DRIVER_FORM_DEFAULTS.items():
         state[key] = value
@@ -589,11 +650,11 @@ def make_signature() -> str:
 def validate_inputs() -> List[str]:
     errors = []
     if not st.session_state.origin_name.strip():
-        errors.append("Enter the pickup location.")
+        errors.append(t("enter_pickup"))
     if not st.session_state.destination_name.strip():
-        errors.append("Enter the delivery location.")
+        errors.append(t("enter_delivery"))
     if len(st.session_state.drivers) == 0:
-        errors.append("No trucks are registered yet. Add one in the Drivers tab.")
+        errors.append(t("no_trucks"))
     return errors
 
 
@@ -604,7 +665,7 @@ def run_analysis() -> Dict[str, Any]:
         origin_data = geocode_location(inputs["origin_name"])
         destination_data = geocode_location(inputs["destination_name"])
     except Exception as exc:
-        raise AnalysisError(f"We could not find that location. {exc}") from exc
+        raise AnalysisError(t("loc_not_found", err=exc)) from exc
 
     origin = Location(
         origin_data["name"], origin_data["latitude"], origin_data["longitude"]
@@ -643,13 +704,11 @@ def run_analysis() -> Dict[str, Any]:
 
     fleet, fleet_errors = clean_fleet(st.session_state.drivers)
     if fleet_errors:
-        raise AnalysisError(
-            "Please fix the truck list first: " + " ".join(fleet_errors)
-        )
+        raise AnalysisError(t("fix_fleet_first", errors=" ".join(fleet_errors)))
 
     drivers, fleet_warnings = build_drivers(fleet)
     if not drivers:
-        raise AnalysisError("No usable trucks found. " + " ".join(fleet_warnings))
+        raise AnalysisError(t("no_usable_trucks", warnings=" ".join(fleet_warnings)))
 
     matches = rank_matches(shipment, drivers, analysis, get_route)
 
@@ -669,16 +728,27 @@ def run_analysis() -> Dict[str, Any]:
 # MAP
 # =========================================================
 
+# Keys match the English leg names produced by core.py.
 LEG_COLORS = {
     "Truck to farm": [230, 126, 34],
     "Farm to buyer": [46, 125, 50],
     "Buyer to truck destination": [120, 120, 120],
+}
+LEG_KEYS = {
+    "Truck to farm": "leg_truck_to_farm",
+    "Farm to buyer": "leg_farm_to_buyer",
+    "Buyer to truck destination": "leg_buyer_to_dest",
 }
 
 POINT_COLORS = {
     "Farm": [46, 125, 50],
     "Buyer": [30, 90, 200],
     "Recommended truck": [230, 126, 34],
+}
+POINT_KEYS = {
+    "Farm": "pt_farm",
+    "Buyer": "pt_buyer",
+    "Recommended truck": "pt_truck",
 }
 
 
@@ -687,13 +757,13 @@ def render_map(result: Dict[str, Any], best) -> None:
 
     points = [
         {
-            "name": f"Farm: {shipment.origin.name}",
+            "name": f"{t('pt_farm')}: {shipment.origin.name}",
             "label": "Farm",
             "lat": shipment.origin.latitude,
             "lon": shipment.origin.longitude,
         },
         {
-            "name": f"Buyer: {shipment.destination.name}",
+            "name": f"{t('pt_buyer')}: {shipment.destination.name}",
             "label": "Buyer",
             "lat": shipment.destination.latitude,
             "lon": shipment.destination.longitude,
@@ -715,7 +785,9 @@ def render_map(result: Dict[str, Any], best) -> None:
             if leg["geometry"]:
                 paths.append(
                     {
-                        "name": leg["name"],
+                        "name": t(LEG_KEYS.get(leg["name"], "leg_truck_to_farm"))
+                        if leg["name"] in LEG_KEYS
+                        else leg["name"],
                         "path": leg["geometry"],
                         "color": LEG_COLORS.get(leg["name"], [90, 90, 90]),
                     }
@@ -772,31 +844,49 @@ def render_map(result: Dict[str, Any], best) -> None:
         )
     )
 
-    st.caption(
-        "Orange: truck to your farm. Green: farm to buyer. "
-        "Grey: buyer to the truck's own destination."
-    )
+    st.caption(t("map_caption"))
 
 
 # =========================================================
 # RESULTS
 # =========================================================
 
-def match_table(matches, drivers: Dict[str, Driver]) -> pd.DataFrame:
+def reason_text(match, crop: str) -> str:
+    """Rejection reasons in the current language."""
+    details = getattr(match, "rejection_details", None)
+    if not details:
+        return match.reason.replace("Rejected: ", "")
+
+    parts = []
+    for item in details:
+        params = {k: v for k, v in item.items() if k != "code"}
+        if "vehicle" in params:
+            params["vehicle"] = vehicle_label(params["vehicle"])
+        if "crop" in params:
+            params["crop"] = crop_label(params["crop"])
+        try:
+            parts.append(t(f"rej_{item['code']}", **params))
+        except (KeyError, IndexError):
+            parts.append(match.reason.replace("Rejected: ", ""))
+            break
+    return " ".join(parts)
+
+
+def match_table(matches, drivers: Dict[str, Driver], crop: str) -> pd.DataFrame:
     rows = []
     for m in matches:
         driver = drivers.get(m.driver_id)
         rows.append(
             {
-                "Truck": m.driver_id,
-                "Driver": driver.name if driver and driver.name else "-",
-                "Result": "Suitable" if m.valid else "Not suitable",
-                "Match score": round(m.score * 100),
-                "Extra distance (km)": round(m.detour_km, 1),
-                "Distance to farm (km)": round(m.pickup_distance_km, 1),
-                "Hours to deliver": round(m.time_to_delivery_hours, 1),
-                "Freshness left (h)": round(max(0.0, m.remaining_at_delivery_hours), 1),
-                "Notes": "Good match." if m.valid else m.reason.replace("Rejected: ", ""),
+                t("col_truck"): m.driver_id,
+                t("col_driver"): driver.name if driver and driver.name else "-",
+                t("col_result"): t("suitable") if m.valid else t("not_suitable"),
+                t("col_score"): round(m.score * 100),
+                t("col_extra"): round(m.detour_km, 1),
+                t("col_to_farm"): round(m.pickup_distance_km, 1),
+                t("col_hours"): round(m.time_to_delivery_hours, 1),
+                t("col_fresh"): round(max(0.0, m.remaining_at_delivery_hours), 1),
+                t("col_notes"): t("good_match") if m.valid else reason_text(m, crop),
             }
         )
     return pd.DataFrame(rows)
@@ -810,54 +900,46 @@ def render_results(result: Dict[str, Any], language: str) -> None:
     valid = [m for m in matches if m.valid]
 
     st.divider()
-    st.header("Your results")
+    st.header(t("your_results"))
     st.caption(
-        f"{shipment.crop.title()} · {shipment.quantity_kg:.0f} kg · "
+        f"{crop_label(shipment.crop)} · {shipment.quantity_kg:.0f} kg · "
         f"{shipment.origin.name} → {shipment.destination.name}"
     )
 
     if result["signature"] != make_signature():
-        st.warning(
-            "Your details or the truck list changed after this check. "
-            "Press **Find trucks** again to refresh the results."
-        )
+        st.warning(t("stale_warning"))
     if result["weather_failed"]:
-        st.warning(
-            "Live weather is unavailable, so the temperature you entered "
-            "under Advanced options was used."
-        )
+        st.warning(t("weather_failed"))
     for message in result["fleet_warnings"]:
         st.warning(message)
     if any(m.used_fallback for m in matches):
-        st.warning(
-            "Live road data is temporarily unavailable, so some distances "
-            "are approximate."
-        )
+        st.warning(t("road_fallback"))
 
     # ---------------- freshness summary ----------------------------
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Temperature at farm", f"{analysis.temperature_c:.0f} °C")
-    c2.metric("Freshness left", f"{analysis.remaining_shelf_life_hours:.0f} h")
-    c3.metric("Urgency", f"{URGENCY_ICONS.get(analysis.urgency, '')} {analysis.urgency.title()}")
-    c4.metric("Suitable trucks", len(valid))
+    c1.metric(t("m_temp"), f"{analysis.temperature_c:.0f} °C")
+    c2.metric(t("m_fresh_left"), f"{analysis.remaining_shelf_life_hours:.0f} h")
+    c3.metric(
+        t("m_urgency"),
+        f"{URGENCY_ICONS.get(analysis.urgency, '')} "
+        f"{t('urgency_' + analysis.urgency)}",
+    )
+    c4.metric(t("m_suitable"), len(valid))
     st.caption(
-        f"{URGENCY_TEXT.get(analysis.urgency, '')}. Freshness is an estimate "
-        "based on crop, time since harvest, condition and temperature."
+        t("fresh_caption", text=t("urgency_text_" + analysis.urgency))
     )
 
-    with st.expander("How freshness was estimated"):
+    with st.expander(t("how_fresh")):
         st.write(
-            f"A {shipment.crop} normally stays fresh for about "
-            f"{analysis.base_shelf_life_hours:.0f} hours. After "
-            f"{shipment.harvest_age_hours:.0f} hours since harvest, today's "
-            f"heat and the produce condition, about "
-            f"{analysis.effective_elapsed_hours:.0f} hours of that have been used."
+            t(
+                "how_fresh_text",
+                crop=crop_label(shipment.crop),
+                base=f"{analysis.base_shelf_life_hours:.0f}",
+                age=f"{shipment.harvest_age_hours:.0f}",
+                used=f"{analysis.effective_elapsed_hours:.0f}",
+            )
         )
-        st.caption(
-            "This is a planning estimate, not a food-safety guarantee. "
-            "Refrigerated trucks are assumed to keep produce at its ideal "
-            "temperature while loaded."
-        )
+        st.caption(t("how_fresh_caption"))
 
     # ---------------- recommended truck ----------------------------
     best = valid[0] if valid else None
@@ -866,64 +948,62 @@ def render_results(result: Dict[str, Any], language: str) -> None:
         truck = result["drivers"][best.driver_id]
 
         with st.container(border=True):
-            st.subheader(f"✅ Recommended: {best.driver_id}")
+            st.subheader(t("recommended", id=best.driver_id))
 
             b1, b2, b3, b4 = st.columns(4)
-            b1.metric("Match score", f"{best.score * 100:.0f}%")
-            b2.metric("Extra distance", f"{best.detour_km:.1f} km")
-            b3.metric("Time to deliver", f"{best.time_to_delivery_hours:.1f} h")
-            b4.metric("Freshness at delivery", f"{best.remaining_at_delivery_hours:.0f} h")
+            b1.metric(t("m_score"), f"{best.score * 100:.0f}%")
+            b2.metric(t("m_extra"), f"{best.detour_km:.1f} km")
+            b3.metric(t("m_time"), f"{best.time_to_delivery_hours:.1f} h")
+            b4.metric(t("m_fresh_at"), f"{best.remaining_at_delivery_hours:.0f} h")
 
-            details = [VEHICLE_LABELS.get(truck.vehicle_type, truck.vehicle_type)]
-            details.append(f"capacity {truck.capacity_kg:.0f} kg")
+            details = [vehicle_label(truck.vehicle_type)]
+            details.append(t("capacity_n", n=f"{truck.capacity_kg:.0f}"))
             if truck.name:
-                details.append(f"driver {truck.name}")
+                details.append(t("driver_n", name=truck.name))
             if truck.phone:
                 details.append(f"📞 {truck.phone}")
             st.write(" · ".join(details))
     else:
-        st.error(
-            "No suitable truck was found right now. Try again later, "
-            "or ask drivers to register more trucks in the Drivers tab."
-        )
+        st.error(t("no_suitable"))
 
     # ---------------- all trucks -----------------------------------
-    st.subheader("All trucks compared")
+    st.subheader(t("all_trucks"))
 
-    table = match_table(matches, result["drivers"])
+    table = match_table(matches, result["drivers"], shipment.crop)
     st.dataframe(table, width="stretch", hide_index=True)
     st.download_button(
-        "Download comparison (CSV)",
-        table.to_csv(index=False).encode("utf-8"),
+        t("download_csv"),
+        # utf-8-sig so Excel shows Urdu text correctly
+        table.to_csv(index=False).encode("utf-8-sig"),
         file_name="freshroute_matches.csv",
         mime="text/csv",
     )
 
     # ---------------- summary report -------------------------------
-    st.subheader("Shipment summary")
+    st.subheader(t("summary_header"))
 
     if not groq_configured():
-        st.info("The written summary is not available right now.")
-    elif st.button("Write a shipment summary", key="gen_report"):
+        st.info(t("summary_unavailable"))
+    elif st.button(t("write_summary"), key="gen_report"):
         try:
-            with st.spinner("Writing your summary..."):
+            with st.spinner(t("writing_summary")):
                 text = generate_ai_report(shipment, analysis, matches, weather, language)
             st.session_state.report = {"text": text, "language": language}
         except Exception as exc:
-            st.error(f"We could not write the summary: {exc}")
+            st.error(t("summary_fail", err=exc))
 
     report = st.session_state.report
     if report:
         st.markdown(report["text"])
         st.download_button(
-            "Download summary",
+            t("download_summary"),
             report["text"].encode("utf-8"),
             file_name="freshroute_summary.md",
             mime="text/markdown",
         )
 
     # ---------------- map ------------------------------------------
-    st.subheader("Map")
+    st.subheader(t("map_header"))
     render_map(result, best)
 
 
@@ -932,26 +1012,33 @@ def render_results(result: Dict[str, Any], language: str) -> None:
 # =========================================================
 
 st.markdown(
-    """
+    f"""
 <div class="fr-hero">
-  <h1>🚚 FreshRoute</h1>
-  <p>Get fresh produce to market faster, using trucks that are already heading your way.</p>
+  <h1>{t("hero_title")}</h1>
+  <p>{t("hero_sub")}</p>
 </div>
 """,
     unsafe_allow_html=True,
 )
 
 hint_col, lang_col = st.columns([3, 1], vertical_alignment="center")
-hint_col.caption("You can speak or type in English, Urdu or Roman Urdu.")
+hint_col.caption(t("hint_voice"))
 language = lang_col.selectbox(
-    "Language",
+    t("language"),
     list(LANGUAGE_CODES.keys()),
     key="language",
-    help="Used for voice input and written answers.",
+    format_func=LANGUAGE_LABELS.get,
+    help=t("language_help"),
 )
 
 home_tab, farmer_tab, driver_tab, assistant_tab, about_tab = st.tabs(
-    ["🏠 Home", "🌾 Farmers", "🚚 Drivers", "💬 Assistant", "ℹ️ About"]
+    [
+        t("tab_home"),
+        t("tab_farmers"),
+        t("tab_drivers"),
+        t("tab_assistant"),
+        t("tab_about"),
+    ]
 )
 
 
@@ -960,25 +1047,12 @@ home_tab, farmer_tab, driver_tab, assistant_tab, about_tab = st.tabs(
 # =========================================================
 
 with home_tab:
-    st.header("How FreshRoute works")
+    st.header(t("how_works"))
 
     steps = [
-        (
-            "🌾",
-            "Farmers describe their produce",
-            "Say or type the crop, quantity and where it needs to go.",
-        ),
-        (
-            "🚚",
-            "Drivers register their truck",
-            "Share the vehicle, free space and the route the truck is returning on.",
-        ),
-        (
-            "✅",
-            "FreshRoute finds the best match",
-            "We check space, extra distance and how fresh the produce will "
-            "still be when it arrives.",
-        ),
+        ("🌾", t("step1_t"), t("step1_d")),
+        ("🚚", t("step2_t"), t("step2_d")),
+        ("✅", t("step3_t"), t("step3_d")),
     ]
 
     for column, (icon, title, text) in zip(st.columns(3), steps):
@@ -991,29 +1065,23 @@ with home_tab:
     st.write("")
     fleet_now = st.session_state.drivers
     s1, s2, s3 = st.columns(3)
-    s1.metric("Trucks registered", len(fleet_now))
+    s1.metric(t("s_trucks"), len(fleet_now))
     s2.metric(
-        "Refrigerated trucks",
+        t("s_fridge"),
         int((fleet_now["vehicle_type"] == "refrigerated").sum()),
     )
-    s3.metric("Crops supported", len(CROPS))
+    s3.metric(t("s_crops"), len(CROPS))
 
     st.write("")
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            st.subheader("🌾 For farmers")
-            st.write(
-                "Find a truck for your harvest before it spoils. "
-                "Open the **Farmers** tab to get started."
-            )
+            st.subheader(t("for_farmers"))
+            st.write(t("for_farmers_d"))
     with right:
         with st.container(border=True):
-            st.subheader("🚚 For drivers")
-            st.write(
-                "Earn from empty return trips. "
-                "Open the **Drivers** tab to register your truck."
-            )
+            st.subheader(t("for_drivers"))
+            st.write(t("for_drivers_d"))
 
 
 # =========================================================
@@ -1021,15 +1089,12 @@ with home_tab:
 # =========================================================
 
 with farmer_tab:
-    st.header("Find a truck for your produce")
-    st.write("Tell us about your harvest and where it needs to go.")
+    st.header(t("farmer_header"))
+    st.write(t("farmer_intro"))
 
     voice_box(
-        title="🎙️ Prefer to speak? Describe your shipment",
-        hint=(
-            "Example: \"I have 800 kg of tomatoes harvested 6 hours ago in "
-            "Bahawalpur. I need to send them to Multan.\""
-        ),
+        title=t("farmer_voice_title"),
+        hint=t("farmer_voice_hint"),
         audio_key="voice_audio",
         text_key="transcript_text",
         msg_key="voice_msg",
@@ -1037,43 +1102,43 @@ with farmer_tab:
     )
 
     with st.container(border=True):
-        st.subheader("Your produce")
+        st.subheader(t("your_produce"))
         p1, p2 = st.columns(2)
 
         with p1:
-            st.text_input("Your name or ID", key="farmer_id")
-            st.selectbox("Crop", CROPS, key="crop", format_func=str.title)
-            st.number_input("Quantity (kg)", min_value=1.0, step=50.0, key="quantity")
+            st.text_input(t("farmer_id"), key="farmer_id")
+            st.selectbox(t("crop"), CROPS, key="crop", format_func=crop_label)
+            st.number_input(t("quantity"), min_value=1.0, step=50.0, key="quantity")
 
         with p2:
             st.number_input(
-                "Hours since harvest", min_value=0.0, step=1.0, key="harvest_age"
+                t("harvest_age"), min_value=0.0, step=1.0, key="harvest_age"
             )
             st.slider(
-                "Produce condition",
+                t("condition"),
                 min_value=0.1,
                 max_value=1.0,
                 step=0.05,
                 key="condition",
-                help="1.0 = excellent, 0.1 = badly deteriorated.",
+                help=t("condition_help"),
             )
 
     with st.container(border=True):
-        st.subheader("Pickup and delivery")
+        st.subheader(t("pickup_delivery"))
         l1, l2 = st.columns(2)
-        l1.text_input("Pickup location (your farm)", key="origin_name")
-        l2.text_input("Delivery location (buyer)", key="destination_name")
+        l1.text_input(t("pickup_loc"), key="origin_name")
+        l2.text_input(t("delivery_loc"), key="destination_name")
 
-    with st.expander("Advanced options"):
+    with st.expander(t("advanced")):
         st.number_input(
-            "Temperature to use if live weather is unavailable (°C)",
+            t("fallback_temp"),
             min_value=-10.0,
             max_value=60.0,
             step=0.5,
             key="fallback_temp",
         )
 
-    if st.button("Find trucks", type="primary", width="stretch"):
+    if st.button(t("find_trucks"), type="primary", width="stretch"):
         problems = validate_inputs()
 
         if problems:
@@ -1081,7 +1146,7 @@ with farmer_tab:
                 st.error(problem)
         else:
             try:
-                with st.spinner("Looking for the best truck for you..."):
+                with st.spinner(t("looking")):
                     new_result = run_analysis()
             except AnalysisError as exc:
                 st.error(str(exc))
@@ -1099,19 +1164,12 @@ with farmer_tab:
 # =========================================================
 
 with driver_tab:
-    st.header("Register your truck")
-    st.write(
-        "Returning with an empty or half-empty truck? Tell us about your "
-        "vehicle and route, and farmers can be matched with you."
-    )
+    st.header(t("driver_header"))
+    st.write(t("driver_intro"))
 
     voice_box(
-        title="🎙️ Prefer to speak? Describe your truck",
-        hint=(
-            "Example: \"My name is Ali, phone 0300 1234567. I have a covered "
-            "truck with 4 tons capacity in Lodhran, returning to Bahawalpur, "
-            "free in 2 hours.\""
-        ),
+        title=t("driver_voice_title"),
+        hint=t("driver_voice_hint"),
         audio_key="driver_voice_audio",
         text_key="driver_transcript_text",
         msg_key="driver_voice_msg",
@@ -1119,70 +1177,70 @@ with driver_tab:
     )
 
     with st.container(border=True):
-        st.subheader("You and your truck")
+        st.subheader(t("you_and_truck"))
         d1, d2 = st.columns(2)
 
         with d1:
-            st.text_input("Your name", key="drv_name")
-            st.text_input(
-                "Phone number (shown to the farmer you are matched with)",
-                key="drv_phone",
-            )
-            st.text_input("Truck ID", key="drv_id")
+            st.text_input(t("your_name"), key="drv_name")
+            st.text_input(t("your_phone"), key="drv_phone")
+            st.text_input(t("truck_id"), key="drv_id")
 
         with d2:
             st.selectbox(
-                "Vehicle type",
+                t("vehicle_type"),
                 list(VEHICLE_TYPES),
                 key="drv_vehicle",
-                format_func=VEHICLE_LABELS.get,
+                format_func=vehicle_label,
             )
             st.number_input(
-                "Free capacity (kg)", min_value=1.0, step=100.0, key="drv_capacity"
+                t("free_capacity"), min_value=1.0, step=100.0, key="drv_capacity"
             )
             st.number_input(
-                "Free in how many hours? (0 = free now)",
+                t("free_in"),
                 min_value=0.0,
                 step=0.5,
                 key="drv_available",
             )
 
     with st.container(border=True):
-        st.subheader("Your route")
+        st.subheader(t("your_route"))
         r1, r2 = st.columns(2)
-        r1.text_input("Where is the truck now?", key="drv_location")
-        r2.text_input("Where is it returning to?", key="drv_destination")
+        r1.text_input(t("truck_now"), key="drv_location")
+        r2.text_input(t("truck_returning"), key="drv_destination")
 
     st.button(
-        "Register truck",
+        t("register_truck"),
         type="primary",
         width="stretch",
         on_click=register_driver_callback,
     )
 
     if st.session_state.driver_msg:
-        kind, message = st.session_state.driver_msg
-        getattr(st, kind)(message)
+        show_message(st.session_state.driver_msg)
 
     # ---------------- registered trucks ----------------------------
     st.divider()
-    st.subheader("Registered trucks")
+    st.subheader(t("registered_trucks"))
 
-    overview = st.session_state.drivers.rename(
+    overview = st.session_state.drivers.copy()
+    overview["vehicle_type"] = overview["vehicle_type"].map(
+        lambda v: vehicle_label(str(v).lower())
+    )
+    overview = overview.rename(
         columns={
-            "driver_id": "Truck",
-            "driver_name": "Driver",
-            "phone": "Phone",
-            "vehicle_type": "Vehicle",
-            "capacity_kg": "Capacity (kg)",
-            "available_in_hours": "Free in (h)",
-            "current_location": "From",
-            "destination": "To",
+            "driver_id": t("ov_truck"),
+            "driver_name": t("ov_driver"),
+            "phone": t("ov_phone"),
+            "vehicle_type": t("ov_vehicle"),
+            "capacity_kg": t("ov_capacity"),
+            "available_in_hours": t("ov_free"),
+            "current_location": t("ov_from"),
+            "destination": t("ov_to"),
         }
     ).drop(columns=["reliability"])
     st.dataframe(overview, width="stretch", hide_index=True)
 
-    with st.expander("Edit or remove trucks"):
+    with st.expander(t("edit_trucks")):
         edited = st.data_editor(
             st.session_state.drivers,
             num_rows="dynamic",
@@ -1190,26 +1248,28 @@ with driver_tab:
             hide_index=True,
             key=f"fleet_editor_{st.session_state.fleet_version}",
             column_config={
-                "driver_id": st.column_config.TextColumn("Truck ID", required=True),
-                "driver_name": st.column_config.TextColumn("Driver name"),
-                "phone": st.column_config.TextColumn("Phone"),
+                "driver_id": st.column_config.TextColumn(
+                    t("ed_truck_id"), required=True
+                ),
+                "driver_name": st.column_config.TextColumn(t("ed_driver")),
+                "phone": st.column_config.TextColumn(t("ed_phone")),
                 "vehicle_type": st.column_config.SelectboxColumn(
-                    "Vehicle", options=list(VEHICLE_TYPES), required=True
+                    t("ed_vehicle"), options=list(VEHICLE_TYPES), required=True
                 ),
                 "capacity_kg": st.column_config.NumberColumn(
-                    "Capacity (kg)", min_value=1, step=100, required=True
+                    t("ed_capacity"), min_value=1, step=100, required=True
                 ),
                 "available_in_hours": st.column_config.NumberColumn(
-                    "Free in (h)", min_value=0, step=0.5, required=True
+                    t("ed_free"), min_value=0, step=0.5, required=True
                 ),
                 "current_location": st.column_config.TextColumn(
-                    "Current location", required=True
+                    t("ed_current"), required=True
                 ),
                 "destination": st.column_config.TextColumn(
-                    "Returning to", required=True
+                    t("ed_returning"), required=True
                 ),
                 "reliability": st.column_config.NumberColumn(
-                    "Rating (0-1)",
+                    t("ed_rating"),
                     min_value=0.0,
                     max_value=1.0,
                     step=0.05,
@@ -1220,25 +1280,27 @@ with driver_tab:
 
         save_col, reset_col = st.columns(2)
 
-        if save_col.button("Save changes", type="primary", width="stretch"):
+        if save_col.button(t("save_changes"), type="primary", width="stretch"):
             cleaned, fleet_errors = clean_fleet(edited)
             if fleet_errors:
                 for error in fleet_errors:
                     st.error(error)
             elif cleaned.empty:
-                st.error("Keep at least one truck.")
+                st.error(t("keep_one"))
             else:
                 set_fleet(cleaned)
-                st.success("Changes saved.")
+                st.success(t("changes_saved"))
 
-        if reset_col.button("Restore sample trucks", width="stretch"):
+        if reset_col.button(t("restore_sample"), width="stretch"):
             set_fleet(default_fleet())
             st.rerun()
 
     st.caption(
-        f"A truck is only matched if the extra distance is at most "
-        f"{MAX_DETOUR_KM:.0f} km and the produce will still have at least "
-        f"{MIN_REMAINING_SHELF_LIFE_HOURS:.0f} hours of freshness left on arrival."
+        t(
+            "rules_caption",
+            km=f"{MAX_DETOUR_KM:.0f}",
+            h=f"{MIN_REMAINING_SHELF_LIFE_HOURS:.0f}",
+        )
     )
 
 
@@ -1247,33 +1309,33 @@ with driver_tab:
 # =========================================================
 
 with assistant_tab:
-    st.header("Ask FreshRoute")
+    st.header(t("assistant_header"))
 
     result = st.session_state.result
 
     if result is None:
-        st.info("Find trucks for a shipment first, then ask questions about the result.")
+        st.info(t("assistant_need_result"))
     elif not groq_configured():
-        st.info("The assistant is not available right now.")
+        st.info(t("assistant_unavailable"))
     else:
         shipment = result["shipment"]
         st.write(
-            f"Current shipment: **{shipment.crop.title()}, "
-            f"{shipment.quantity_kg:.0f} kg**"
+            t(
+                "current_shipment",
+                crop=crop_label(shipment.crop),
+                qty=f"{shipment.quantity_kg:.0f}",
+            )
         )
-        st.caption(
-            "Try: Why was this truck chosen? What is the biggest risk? "
-            "What should I do next?"
-        )
+        st.caption(t("assistant_try"))
 
-        if st.button("Clear conversation"):
+        if st.button(t("clear_chat")):
             st.session_state.chat = []
 
         for message in st.session_state.chat:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-        question = st.chat_input("Type your question")
+        question = st.chat_input(t("chat_input"))
 
         if question and question.strip():
             history = list(st.session_state.chat)
@@ -1284,7 +1346,7 @@ with assistant_tab:
 
             with st.chat_message("assistant"):
                 try:
-                    with st.spinner("Thinking..."):
+                    with st.spinner(t("thinking")):
                         answer = ask_freshroute_ai(
                             question,
                             shipment,
@@ -1299,7 +1361,7 @@ with assistant_tab:
                         {"role": "assistant", "content": answer}
                     )
                 except Exception as exc:
-                    st.error(f"We could not answer that: {exc}")
+                    st.error(t("answer_fail", err=exc))
 
 
 # =========================================================
@@ -1307,31 +1369,5 @@ with assistant_tab:
 # =========================================================
 
 with about_tab:
-    st.header("About FreshRoute")
-
-    st.markdown(
-        """
-### Why it exists
-
-Farmers often struggle to find transport before their produce spoils, while
-trucks returning from deliveries travel with empty space. FreshRoute connects
-the two, so produce reaches buyers fresher and trucks earn from trips that
-would otherwise be wasted.
-
-### What we check for every truck
-
-- The vehicle suits the crop (for example, strawberries need refrigeration)
-- The truck has enough space and is free in time
-- The extra distance to collect and deliver the produce is small
-- The produce will still be fresh when it arrives
-
-### Good to know
-
-- Freshness is a planning estimate, not a food-safety guarantee.
-- Distances are approximate because places are located by town or city.
-- Trucks you register are kept only for your current visit. They are not
-  stored permanently.
-- FreshRoute is a prototype that supports decisions. Please confirm
-  details directly with the driver or farmer before loading.
-"""
-    )
+    st.header(t("about_header"))
+    st.markdown(t("about_md"))
