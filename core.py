@@ -112,6 +112,8 @@ class Driver:
     current_location: Location
     destination: Location
     reliability: float = 0.8
+    name: str = ""
+    phone: str = ""
 
     @property
     def refrigerated(self) -> bool:
