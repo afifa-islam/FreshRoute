@@ -87,6 +87,79 @@ def _search_places(name: str) -> List[dict]:
     return data.get("results", []) or []
 
 
+# Common Pakistani places in Urdu, so the usual cases need no AI call.
+URDU_PLACE_NAMES = {
+    "بہاولپور": "Bahawalpur",
+    "ملتان": "Multan",
+    "رحیم یار خان": "Rahim Yar Khan",
+    "لودھراں": "Lodhran",
+    "لاہور": "Lahore",
+    "کراچی": "Karachi",
+    "اسلام آباد": "Islamabad",
+    "راولپنڈی": "Rawalpindi",
+    "فیصل آباد": "Faisalabad",
+    "پشاور": "Peshawar",
+    "کوئٹہ": "Quetta",
+    "گوجرانوالہ": "Gujranwala",
+    "سیالکوٹ": "Sialkot",
+    "ساہیوال": "Sahiwal",
+    "سرگودھا": "Sargodha",
+    "ڈیرہ غازی خان": "Dera Ghazi Khan",
+    "مظفر گڑھ": "Muzaffargarh",
+    "خانیوال": "Khanewal",
+    "وہاڑی": "Vehari",
+    "بہاولنگر": "Bahawalnagar",
+    "صادق آباد": "Sadiqabad",
+    "اوکاڑہ": "Okara",
+    "جھنگ": "Jhang",
+    "حیدرآباد": "Hyderabad",
+    "حیدر آباد": "Hyderabad",
+    "سکھر": "Sukkur",
+    "پنجاب": "Punjab",
+    "سندھ": "Sindh",
+}
+
+
+def _has_non_latin(text: str) -> bool:
+    return any(ord(char) > 127 for char in text)
+
+
+def _transliterate_place(text: str) -> str:
+    answer = groq_chat(
+        "You convert place names written in Urdu or another script into "
+        "their usual English spelling. Reply with ONLY the English name "
+        "on one line, for example: Bahawalpur, Pakistan",
+        text,
+        max_tokens=800,
+        temperature=0.0,
+    )
+    lines = answer.strip().splitlines()
+    return lines[0].strip(" \"'") if lines else ""
+
+
+def _to_english_place(query: str) -> str:
+    """Return the place name in English letters, or raise ValueError."""
+    cleaned = query.replace("،", ",").replace("پاکستان", "Pakistan")
+    parts = [p.strip() for p in cleaned.split(",") if p.strip()]
+    result = ", ".join(URDU_PLACE_NAMES.get(p, p) for p in parts)
+
+    if not _has_non_latin(result):
+        return result
+
+    if groq_configured():
+        try:
+            english = _transliterate_place(result)
+            if english and not _has_non_latin(english):
+                return english
+        except Exception:
+            pass
+
+    raise ValueError(
+        f"Could not read the place name '{query}'. Please type it in "
+        "English letters, for example 'Bahawalpur'."
+    )
+
+
 @st.cache_data(ttl=60 * 60 * 24, show_spinner=False)
 def geocode_location(location_name: str) -> Dict[str, Any]:
     """Find a Pakistani place by name.
@@ -99,6 +172,8 @@ def geocode_location(location_name: str) -> Dict[str, Any]:
     query = (location_name or "").strip()
     if not query:
         raise ValueError("Location cannot be empty.")
+
+    query = _to_english_place(query)
 
     parts = [p.strip() for p in query.split(",") if p.strip()]
     primary = parts[0]
@@ -352,6 +427,11 @@ Return JSON with exactly these keys. Use null when the message does not say.
   "pickup_location": string or null,
   "destination": string or null
 }}
+
+Write pickup_location and destination in English letters (Latin script)
+using the usual English spelling of Pakistani places, even when the
+message is in Urdu. Example: the Urdu spelling of Bahawalpur becomes
+"Bahawalpur".
 
 Convert units to kilograms (1 maund = 40 kg, 1 ton = 1000 kg) and
 hours (1 day = 24 hours).
