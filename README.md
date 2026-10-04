@@ -23,11 +23,25 @@ streamlit run app.py
 The app works without a Groq key. Only the AI report, assistant and voice
 features are disabled.
 
+## App layout
+
+| Tab | Purpose |
+|-----|---------|
+| Home | How FreshRoute works and live counts |
+| Farmers | Shipment form (type or speak), truck matches, summary, map |
+| Drivers | Truck registration form (type or speak), list of registered trucks |
+| Assistant | Chat about the current shipment result |
+| About | Plain-language explanation for users |
+
+Both the farmer and driver forms accept an optional voice message in
+English, Urdu or Roman Urdu. The message is converted to text, which fills
+the form for the user to review before submitting.
+
 ## Project layout
 
 | File | Purpose |
 |------|---------|
-| `app.py` | Streamlit interface |
+| `app.py` | Streamlit interface (tabs, forms, results, map) |
 | `core.py` | Shelf-life model, matching and scoring (no network, easy to test) |
 | `services.py` | Geocoding, weather, routing, Groq LLM and speech |
 | `tests/test_core.py` | Tests for the core logic: `python tests/test_core.py` |
